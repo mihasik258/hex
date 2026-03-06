@@ -24,6 +24,7 @@ import (
 	"nec/filetransfer"
 	"nec/messaging"
 	"nec/network"
+	"nec/voicecall"
 )
 
 func main() {
@@ -65,6 +66,16 @@ func main() {
 	// ── Register file transfer handler ─────────────────────────────────
 	filetransfer.RegisterHandler(node.Host, "received_files")
 
+	// ── Initialize call manager ────────────────────────────────────────
+	callMgr := voicecall.NewCallManager(node.Host)
+	callMgr.OnCall = func(remote peer.ID, m *voicecall.CallMetrics) {
+		fmt.Printf("\n  📞 Call active with %s\n", remote.String()[:16])
+	}
+	callMgr.OnEnd = func(remote peer.ID, final voicecall.MetricsSnapshot) {
+		fmt.Printf("\n  📞 Call ended with %s — %s\n",
+			remote.String()[:16], voicecall.FormatSnapshot(final))
+	}
+
 	// ── Initialize messaging subsystem ──────────────────────────────────
 	trustStore := messaging.NewTrustStore()
 	msgStore := messaging.NewMessageStore(24 * time.Hour)
@@ -102,7 +113,7 @@ func main() {
 			if line == "" {
 				continue
 			}
-			handleCommand(line, node.Context(), node.Host, chatRoom, trustStore, msgStore)
+			handleCommand(line, node.Context(), node.Host, chatRoom, trustStore, msgStore, callMgr)
 		}
 	}()
 
@@ -112,7 +123,7 @@ func main() {
 }
 
 // handleCommand processes CLI commands and chat messages.
-func handleCommand(line string, ctx context.Context, h host.Host, cr *messaging.ChatRoom, ts *messaging.TrustStore, ms *messaging.MessageStore) {
+func handleCommand(line string, ctx context.Context, h host.Host, cr *messaging.ChatRoom, ts *messaging.TrustStore, ms *messaging.MessageStore, cm *voicecall.CallManager) {
 	switch {
 	case line == "/help":
 		printHelp()
@@ -196,6 +207,36 @@ func handleCommand(line string, ctx context.Context, h host.Host, cr *messaging.
 			}
 		}()
 
+	case strings.HasPrefix(line, "/call "):
+		peerStr := strings.TrimPrefix(line, "/call ")
+		pid, err := peer.Decode(peerStr)
+		if err != nil {
+			fmt.Printf("  Invalid PeerID: %v\n", err)
+			return
+		}
+		go func() {
+			if err := cm.Call(ctx, pid); err != nil {
+				fmt.Printf("  ❌ Call failed: %v\n", err)
+			}
+		}()
+
+	case line == "/hangup":
+		if !cm.IsInCall() {
+			fmt.Println("  No active call.")
+			return
+		}
+		cm.Hangup()
+		fmt.Println("  📞 Call ended.")
+
+	case line == "/callstats":
+		metrics := cm.ActiveCallMetrics()
+		if metrics == nil {
+			fmt.Println("  No active call.")
+			return
+		}
+		snap := metrics.Snapshot()
+		fmt.Printf("  📊 %s\n", voicecall.FormatSnapshot(snap))
+
 	case strings.HasPrefix(line, "/"):
 		fmt.Printf("  Unknown command: %s (type /help)\n", line)
 
@@ -264,6 +305,9 @@ func printHelp() {
 	fmt.Println("    /verify <PeerID>          — mark peer as verified")
 	fmt.Println("    /block <PeerID>           — block a peer")
 	fmt.Println("    /send <PeerID> <filepath> — send a file")
+	fmt.Println("    /call <PeerID>            — start a voice call")
+	fmt.Println("    /hangup                   — end active call")
+	fmt.Println("    /callstats                — show call metrics")
 	fmt.Println("    /store                    — pending offline msgs")
 	fmt.Println("    /help                     — show this help")
 	fmt.Println("    <text>                    — send a chat message")
