@@ -23,6 +23,8 @@ const (
 	TypeAck MessageType = "ack"
 	// TypeStatus indicates a peer status update (online/offline).
 	TypeStatus MessageType = "status"
+	// TypeDM is a direct (private) message to a specific peer.
+	TypeDM MessageType = "dm"
 )
 
 // Message is the canonical JSON wire format for all NEC messages exchanged

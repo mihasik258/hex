@@ -1,6 +1,7 @@
 // Package webui provides an HTTP server with WebSocket support that bridges
 // browser clients to the NEC P2P node. Each browser connects via WebSocket
-// and can send/receive chat messages, view peers, manage trust, and more.
+// and can send/receive chat messages, direct messages, view peers, manage
+// trust, and monitor calls.
 package webui
 
 import (
@@ -10,7 +11,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +30,7 @@ import (
 var staticFiles embed.FS
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for LAN use.
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 // WSMessage is the JSON envelope for all WebSocket communication.
@@ -37,7 +40,7 @@ type WSMessage struct {
 }
 
 // Server manages the HTTP/WebSocket server and bridges browser clients
-// to the P2P node's messaging, file transfer, and call subsystems.
+// to the P2P node subsystems.
 type Server struct {
 	host    host.Host
 	chat    *messaging.ChatRoom
@@ -51,7 +54,7 @@ type Server struct {
 	clients map[*websocket.Conn]bool
 }
 
-// NewServer creates a new WebUI server connected to the P2P subsystems.
+// NewServer creates a new WebUI server.
 func NewServer(
 	h host.Host,
 	chat *messaging.ChatRoom,
@@ -60,7 +63,7 @@ func NewServer(
 	callMgr *voicecall.CallManager,
 	nick string,
 ) *Server {
-	return &Server{
+	s := &Server{
 		host:    h,
 		chat:    chat,
 		trust:   trust,
@@ -70,12 +73,44 @@ func NewServer(
 		nick:    nick,
 		clients: make(map[*websocket.Conn]bool),
 	}
+
+	// Register DM handler so incoming direct messages get forwarded to browsers.
+	messaging.RegisterDMHandler(h, func(msg *messaging.Message) {
+		senderID, _ := peer.Decode(msg.Sender)
+		if s.trust.IsBlocked(senderID) {
+			return
+		}
+		s.trust.RecordPeer(senderID, msg.SenderNick)
+
+		trustTag := "unverified"
+		if s.trust.IsVerified(senderID) {
+			trustTag = "verified"
+		}
+
+		displayNick := msg.SenderNick
+		if displayNick == "" {
+			displayNick = msg.Sender[:8]
+		}
+
+		s.broadcast(WSMessage{
+			Type: "dm",
+			Payload: jsonRaw(map[string]string{
+				"id":        msg.ID,
+				"sender":    msg.Sender,
+				"nick":      displayNick,
+				"text":      msg.Payload,
+				"timestamp": time.UnixMilli(msg.Timestamp).Format("15:04:05"),
+				"trust":     trustTag,
+			}),
+		})
+	})
+
+	return s
 }
 
-// Start launches the HTTP server on the given address (e.g. ":8080")
-// and begins forwarding incoming GossipSub messages to all connected browsers.
+// Start launches the HTTP server. The address should be like ":8080".
+// It binds to 0.0.0.0 explicitly so phones on the same LAN can connect.
 func (s *Server) Start(ctx context.Context, addr string) error {
-	// Serve embedded static files.
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		return fmt.Errorf("static fs: %w", err)
@@ -86,9 +121,15 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/api/info", s.handleInfo)
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	// Ensure we bind to all interfaces (0.0.0.0) for LAN access from phones.
+	listenAddr := addr
+	if strings.HasPrefix(addr, ":") {
+		listenAddr = "0.0.0.0" + addr
+	}
 
-	// Forward incoming P2P messages to all browser clients.
+	srv := &http.Server{Addr: listenAddr, Handler: mux}
+
+	// Forward incoming GossipSub messages to browsers.
 	go s.forwardMessages(ctx)
 
 	go func() {
@@ -98,20 +139,30 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("[webui] HTTP server starting on %s", addr)
+	// Print actual URLs.
+	log.Printf("[webui] HTTP server starting on %s", listenAddr)
+	if ips := getLocalIPs(); len(ips) > 0 {
+		port := addr
+		if i := strings.LastIndex(addr, ":"); i >= 0 {
+			port = addr[i:]
+		}
+		for _, ip := range ips {
+			log.Printf("[webui]   → http://%s%s", ip, port)
+		}
+	}
+
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("http server: %w", err)
 	}
 	return nil
 }
 
-// broadcast sends a WSMessage to all connected WebSocket clients.
+// broadcast sends to all connected WebSocket clients.
 func (s *Server) broadcast(msg WSMessage) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for conn := range s.clients {
@@ -122,7 +173,6 @@ func (s *Server) broadcast(msg WSMessage) {
 	}
 }
 
-// handleInfo returns node identity info as JSON (for initial page load).
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -133,7 +183,6 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWS upgrades HTTP to WebSocket and handles client messages.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -146,8 +195,6 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	log.Printf("[webui] Client connected (%d total)", len(s.clients))
-
-	// Send current peers list on connect.
 	s.sendPeersList(conn)
 
 	defer func() {
@@ -163,17 +210,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-
 		var msg WSMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-
 		s.handleClientMessage(conn, msg)
 	}
 }
 
-// handleClientMessage processes a message from a browser client.
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 	switch msg.Type {
 	case "send_chat":
@@ -186,6 +230,28 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 		if err := s.chat.Publish(payload.Text); err != nil {
 			log.Printf("[webui] Publish error: %v", err)
 		}
+
+	case "send_dm":
+		var payload struct {
+			PeerID string `json:"peer_id"`
+			Text   string `json:"text"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil || payload.Text == "" {
+			return
+		}
+		pid, err := peer.Decode(payload.PeerID)
+		if err != nil {
+			return
+		}
+		go func() {
+			if err := messaging.SendDM(context.Background(), s.host, s.selfID, s.nick, pid, payload.Text); err != nil {
+				log.Printf("[webui] DM error: %v", err)
+				s.sendToConn(conn, WSMessage{
+					Type:    "dm_error",
+					Payload: jsonRaw(map[string]string{"error": err.Error()}),
+				})
+			}
+		}()
 
 	case "get_peers":
 		s.sendPeersList(conn)
@@ -229,10 +295,18 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 
 	case "hangup":
 		s.callMgr.Hangup()
+		s.broadcast(WSMessage{
+			Type:    "call_ended",
+			Payload: jsonRaw(map[string]string{"reason": "local_hangup"}),
+		})
 
 	case "get_callstats":
 		m := s.callMgr.ActiveCallMetrics()
 		if m == nil {
+			s.sendToConn(conn, WSMessage{
+				Type:    "call_ended",
+				Payload: jsonRaw(map[string]string{"reason": "no_call"}),
+			})
 			return
 		}
 		snap := m.Snapshot()
@@ -251,7 +325,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 	}
 }
 
-// sendPeersList sends the current peer list to a single client.
 func (s *Server) sendPeersList(conn *websocket.Conn) {
 	peers := s.chat.ListPeers()
 	list := make([]map[string]string, 0, len(peers))
@@ -269,13 +342,9 @@ func (s *Server) sendPeersList(conn *websocket.Conn) {
 		}
 		list = append(list, entry)
 	}
-	s.sendToConn(conn, WSMessage{
-		Type:    "peers",
-		Payload: jsonRaw(list),
-	})
+	s.sendToConn(conn, WSMessage{Type: "peers", Payload: jsonRaw(list)})
 }
 
-// sendTrustList sends the trust store to a single client.
 func (s *Server) sendTrustList(conn *websocket.Conn) {
 	records := s.trust.ListAll()
 	list := make([]map[string]string, 0, len(records))
@@ -288,13 +357,10 @@ func (s *Server) sendTrustList(conn *websocket.Conn) {
 			"last_seen":     r.LastSeen.Format("15:04:05"),
 		})
 	}
-	s.sendToConn(conn, WSMessage{
-		Type:    "trust",
-		Payload: jsonRaw(list),
-	})
+	s.sendToConn(conn, WSMessage{Type: "trust", Payload: jsonRaw(list)})
 }
 
-// forwardMessages reads from the GossipSub ChatRoom and broadcasts to all WS clients.
+// forwardMessages reads from GossipSub and broadcasts to all browsers.
 func (s *Server) forwardMessages(ctx context.Context) {
 	for {
 		select {
@@ -304,7 +370,6 @@ func (s *Server) forwardMessages(ctx context.Context) {
 			if !ok {
 				return
 			}
-
 			senderID, _ := peer.Decode(msg.Sender)
 			if s.trust.IsBlocked(senderID) {
 				continue
@@ -333,7 +398,6 @@ func (s *Server) forwardMessages(ctx context.Context) {
 						"trust":     trustTag,
 					}),
 				})
-				// Send ACK.
 				s.chat.PublishAck(msg.ID)
 
 			case messaging.TypeAck:
@@ -350,14 +414,26 @@ func (s *Server) forwardMessages(ctx context.Context) {
 }
 
 func (s *Server) sendToConn(conn *websocket.Conn, msg WSMessage) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
+	data, _ := json.Marshal(msg)
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 
 func jsonRaw(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+// getLocalIPs returns all non-loopback IPv4 addresses for LAN access hints.
+func getLocalIPs() []string {
+	var ips []string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			ips = append(ips, ipnet.IP.String())
+		}
+	}
+	return ips
 }

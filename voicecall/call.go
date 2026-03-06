@@ -29,9 +29,11 @@ type ActiveCall struct {
 	PC         *webrtc.PeerConnection
 	DC         *webrtc.DataChannel
 	Metrics    *CallMetrics
+	sigStream  network.Stream // Keep signaling stream open for hangup notification.
 	ctx        context.Context
 	cancel     context.CancelFunc
 	lastSeq    uint32 // Last received sequence number for loss detection.
+	ended      bool   // Guard against double-hangup.
 }
 
 // NewCallManager creates a CallManager and registers the signaling stream handler.
@@ -90,6 +92,7 @@ func (cm *CallManager) Call(ctx context.Context, target peer.ID) error {
 		PC:         pc,
 		DC:         dc,
 		Metrics:    metrics,
+		sigStream:  s,
 		ctx:        callCtx,
 		cancel:     callCancel,
 	}
@@ -106,7 +109,7 @@ func (cm *CallManager) Call(ctx context.Context, target peer.ID) error {
 	// ICE connection state monitoring.
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		log.Printf("[call] ICE state: %s", state.String())
-		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected {
+		if state == webrtc.ICEConnectionStateFailed {
 			cm.Hangup()
 		}
 	})
@@ -186,21 +189,8 @@ func (cm *CallManager) Call(ctx context.Context, target peer.ID) error {
 	// Start metrics logging in background.
 	go cm.metricsLoop(call)
 
-	// Wait for hangup signal in background.
-	go func() {
-		defer s.Close()
-		for {
-			msg, err := ReadSignal(s)
-			if err != nil {
-				return
-			}
-			if msg.Type == SignalHangup {
-				log.Printf("[call] Remote peer hung up")
-				cm.Hangup()
-				return
-			}
-		}
-	}()
+	// Listen for remote hangup in background.
+	go cm.listenForHangup(call)
 
 	return nil
 }
@@ -248,6 +238,7 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 		RemotePeer: remotePeer,
 		PC:         pc,
 		Metrics:    metrics,
+		sigStream:  s,
 		ctx:        callCtx,
 		cancel:     callCancel,
 	}
@@ -268,7 +259,7 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		log.Printf("[call] ICE state: %s", state.String())
-		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected {
+		if state == webrtc.ICEConnectionStateFailed {
 			cm.Hangup()
 		}
 	})
@@ -328,22 +319,24 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 	}
 
 	go cm.metricsLoop(call)
+	go cm.listenForHangup(call)
+}
 
-	// Wait for hangup.
-	go func() {
-		defer s.Close()
-		for {
-			msg, err := ReadSignal(s)
-			if err != nil {
-				return
-			}
-			if msg.Type == SignalHangup {
-				log.Printf("[call] Remote peer hung up")
-				cm.Hangup()
-				return
-			}
+// listenForHangup waits for a hangup signal on the signaling stream.
+func (cm *CallManager) listenForHangup(call *ActiveCall) {
+	for {
+		msg, err := ReadSignal(call.sigStream)
+		if err != nil {
+			// Stream closed = remote disconnected.
+			cm.cleanupCall(call, false)
+			return
 		}
-	}()
+		if msg.Type == SignalHangup {
+			log.Printf("[call] Remote peer hung up")
+			cm.cleanupCall(call, false)
+			return
+		}
+	}
 }
 
 // sendToneLoop generates and sends test audio tone packets every 20ms.
@@ -366,7 +359,6 @@ func (cm *CallManager) sendToneLoop(call *ActiveCall) {
 			data := MarshalAudioPacket(pkt)
 
 			if err := call.DC.Send(data); err != nil {
-				log.Printf("[call] Send audio error: %v", err)
 				return
 			}
 			call.Metrics.RecordSent(len(data))
@@ -381,7 +373,6 @@ func (cm *CallManager) sendToneLoop(call *ActiveCall) {
 func (cm *CallManager) handleAudioPacket(call *ActiveCall, data []byte) {
 	pkt, err := UnmarshalAudioPacket(data)
 	if err != nil {
-		log.Printf("[call] Invalid audio packet: %v", err)
 		return
 	}
 
@@ -411,23 +402,46 @@ func (cm *CallManager) metricsLoop(call *ActiveCall) {
 	}
 }
 
-// Hangup ends the active call.
+// Hangup ends the active call and notifies the remote peer.
 func (cm *CallManager) Hangup() {
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
+	call := cm.active
+	cm.mu.Unlock()
 
-	if cm.active == nil {
+	if call == nil {
 		return
 	}
 
-	call := cm.active
-	cm.active = nil
+	// Send hangup signal to remote peer before closing.
+	cm.cleanupCall(call, true)
+}
+
+// cleanupCall tears down the call, optionally sending a hangup to remote.
+func (cm *CallManager) cleanupCall(call *ActiveCall, sendHangup bool) {
+	cm.mu.Lock()
+	if call.ended {
+		cm.mu.Unlock()
+		return
+	}
+	call.ended = true
+	if cm.active == call {
+		cm.active = nil
+	}
+	cm.mu.Unlock()
+
+	// Send hangup to remote peer.
+	if sendHangup && call.sigStream != nil {
+		_ = WriteSignal(call.sigStream, &SignalMessage{Type: SignalHangup, Payload: "bye"})
+	}
 
 	call.cancel()
 	if call.DC != nil {
 		call.DC.Close()
 	}
 	call.PC.Close()
+	if call.sigStream != nil {
+		call.sigStream.Close()
+	}
 
 	final := call.Metrics.Snapshot()
 	log.Printf("[call] Call ended. Final: %s", FormatSnapshot(final))
