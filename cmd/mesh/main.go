@@ -25,11 +25,13 @@ import (
 	"nec/messaging"
 	"nec/network"
 	"nec/voicecall"
+	"nec/webui"
 )
 
 func main() {
 	port := flag.Int("port", 0, "Listen port for QUIC transport (0 = random)")
 	nick := flag.String("nick", "", "Nickname for chat (default: first 8 chars of PeerID)")
+	httpAddr := flag.String("http", "", "HTTP address for Web UI (e.g. :8080). Empty = no Web UI")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime | log.Lshortfile)
@@ -98,8 +100,19 @@ func main() {
 	// ── Print help ──────────────────────────────────────────────────────
 	printHelp()
 
-	// ── Handle incoming messages ────────────────────────────────────────
-	go handleIncoming(chatRoom, trustStore, msgStore, node.PeerID())
+	// ── Start Web UI or CLI message handler ────────────────────────────
+	if *httpAddr != "" {
+		wuiServer := webui.NewServer(node.Host, chatRoom, trustStore, msgStore, callMgr, *nick)
+		go func() {
+			if err := wuiServer.Start(node.Context(), *httpAddr); err != nil {
+				log.Printf("[webui] Server error: %v", err)
+			}
+		}()
+		fmt.Printf("\n  🌐 Web UI: http://<your-ip>%s\n\n", *httpAddr)
+	} else {
+		// CLI-only mode: read messages in background.
+		go handleIncoming(chatRoom, trustStore, msgStore, node.PeerID())
+	}
 
 	// ── Handle graceful shutdown ────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)

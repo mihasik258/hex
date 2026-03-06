@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEC Mesh Messenger</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #232733;
+            --accent: #6c63ff;
+            --accent2: #4ecdc4;
+            --green: #4ecdc4;
+            --red: #ff6b6b;
+            --yellow: #ffe66d;
+            --text: #e8e8e8;
+            --text2: #8b8fa3;
+            --border: #2d3140;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .header h1 { font-size: 18px; font-weight: 700; }
+        .header .info { font-size: 11px; opacity: 0.85; }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block; margin-right: 6px;
+        }
+        .status-dot.online { background: var(--green); }
+        .status-dot.offline { background: var(--red); }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .tab {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text2);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        /* Panels */
+        .panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+        .panel.active { display: flex; }
+
+        /* Chat */
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .msg {
+            background: var(--surface);
+            padding: 10px 12px;
+            border-radius: 10px;
+            max-width: 85%;
+            border-left: 3px solid var(--accent);
+        }
+        .msg.self {
+            align-self: flex-end;
+            border-left: none;
+            border-right: 3px solid var(--accent2);
+            background: var(--surface2);
+        }
+        .msg .nick { font-size: 12px; font-weight: 600; color: var(--accent); }
+        .msg.self .nick { color: var(--accent2); }
+        .msg .trust-badge {
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 8px;
+            margin-left: 6px;
+        }
+        .trust-badge.verified { background: rgba(78,205,196,0.2); color: var(--green); }
+        .trust-badge.unverified { background: rgba(255,230,109,0.2); color: var(--yellow); }
+        .msg .text { margin-top: 4px; font-size: 14px; line-height: 1.4; word-break: break-word; }
+        .msg .time { font-size: 10px; color: var(--text2); margin-top: 4px; }
+
+        /* Input */
+        .input-bar {
+            display: flex;
+            padding: 10px 12px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .input-bar input {
+            flex: 1;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 10px 16px;
+            color: var(--text);
+            font-size: 14px;
+            outline: none;
+        }
+        .input-bar input:focus { border-color: var(--accent); }
+        .btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 10px 18px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .btn:active { opacity: 0.7; }
+        .btn.danger { background: var(--red); }
+        .btn.success { background: var(--green); color: var(--bg); }
+        .btn.small { padding: 6px 12px; font-size: 11px; border-radius: 12px; }
+
+        /* Peers */
+        .peer-list { flex: 1; overflow-y: auto; padding: 12px; }
+        .peer-card {
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border: 1px solid var(--border);
+        }
+        .peer-card .peer-id {
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--text2);
+            word-break: break-all;
+        }
+        .peer-card .sn {
+            font-size: 18px;
+            font-weight: 700;
+            font-family: monospace;
+            letter-spacing: 3px;
+            margin: 6px 0;
+        }
+        .peer-card .actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+        /* Call stats */
+        .call-panel {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+        .call-panel .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            width: 100%;
+        }
+        .stat-card {
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 12px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .stat-card .value { font-size: 22px; font-weight: 700; color: var(--accent); }
+        .stat-card .label { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+        /* Node info */
+        .node-info {
+            padding: 16px;
+            flex: 1;
+        }
+        .info-card {
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+        }
+        .info-card label { font-size: 11px; color: var(--text2); text-transform: uppercase; }
+        .info-card .value {
+            font-family: monospace;
+            font-size: 13px;
+            margin-top: 4px;
+            word-break: break-all;
+            line-height: 1.4;
+        }
+        .info-card .safety-number {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: 4px;
+            color: var(--accent);
+            margin-top: 6px;
+        }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 80px;
+            right: 16px;
+            width: 44px; height: 44px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(108,99,255,0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🔗 NEC Mesh</h1>
+            <div class="info"><span class="status-dot" id="ws-status"></span><span id="conn-text">Connecting...</span></div>
+        </div>
+        <div style="text-align:right">
+            <div id="nick-display" style="font-weight:600;font-size:14px"></div>
+            <div id="peer-count" style="font-size:11px;opacity:0.8">0 peers</div>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" data-panel="chat">💬 Chat</div>
+        <div class="tab" data-panel="peers">👥 Peers</div>
+        <div class="tab" data-panel="calls">📞 Call</div>
+        <div class="tab" data-panel="info">ℹ️ Node</div>
+    </div>
+
+    <div class="panel active" id="panel-chat">
+        <div class="messages" id="messages"></div>
+        <div class="input-bar">
+            <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off">
+            <button class="btn" id="send-btn">Send</button>
+        </div>
+    </div>
+
+    <div class="panel" id="panel-peers">
+        <div class="peer-list" id="peer-list">
+            <p style="color:var(--text2);text-align:center;margin-top:40px">Loading peers...</p>
+        </div>
+        <button class="refresh-btn" onclick="requestPeers()">↻</button>
+    </div>
+
+    <div class="panel" id="panel-calls">
+        <div class="call-panel">
+            <div id="call-status" style="font-size:16px;color:var(--text2)">No active call</div>
+            <div class="stat-grid" id="call-stats" style="display:none">
+                <div class="stat-card"><div class="value" id="stat-latency">–</div><div class="label">Latency (ms)</div></div>
+                <div class="stat-card"><div class="value" id="stat-jitter">–</div><div class="label">Jitter (ms)</div></div>
+                <div class="stat-card"><div class="value" id="stat-sent">–</div><div class="label">Packets Sent</div></div>
+                <div class="stat-card"><div class="value" id="stat-recv">–</div><div class="label">Packets Recv</div></div>
+                <div class="stat-card"><div class="value" id="stat-lost">–</div><div class="label">Packets Lost</div></div>
+                <div class="stat-card"><div class="value" id="stat-loss">–</div><div class="label">Loss %</div></div>
+            </div>
+            <button class="btn danger" id="hangup-btn" style="display:none" onclick="hangup()">Hang Up</button>
+        </div>
+    </div>
+
+    <div class="panel" id="panel-info">
+        <div class="node-info">
+            <div class="info-card">
+                <label>Safety Number</label>
+                <div class="safety-number" id="info-sn">–</div>
+            </div>
+            <div class="info-card">
+                <label>Peer ID</label>
+                <div class="value" id="info-peerid">–</div>
+            </div>
+            <div class="info-card">
+                <label>Nickname</label>
+                <div class="value" id="info-nick">–</div>
+            </div>
+            <div class="info-card">
+                <label>How to Connect</label>
+                <div class="value">
+                    Run on each device:<br>
+                    <code>go run ./cmd/mesh/ -port 4001 -http :8080 -nick Alice</code><br><br>
+                    Open in browser: <strong id="info-url">–</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+let ws;
+let myPeerID = '';
+let callStatsInterval;
+
+// ── WebSocket ──────────────────────────────────────────────────
+function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => {
+        document.getElementById('ws-status').className = 'status-dot online';
+        document.getElementById('conn-text').textContent = 'Connected';
+        requestPeers();
+        fetchInfo();
+    };
+    ws.onclose = () => {
+        document.getElementById('ws-status').className = 'status-dot offline';
+        document.getElementById('conn-text').textContent = 'Disconnected';
+        setTimeout(connect, 2000);
+    };
+    ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleMessage(msg);
+    };
+}
+
+function send(type, payload) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type, payload }));
+    }
+}
+
+// ── Handlers ───────────────────────────────────────────────────
+function handleMessage(msg) {
+    switch (msg.type) {
+        case 'chat': appendChat(msg.payload); break;
+        case 'ack': break; // Silently track ACKs
+        case 'peers': renderPeers(msg.payload); break;
+        case 'trust': renderTrust(msg.payload); break;
+        case 'callstats': renderCallStats(msg.payload); break;
+        case 'call_error': alert('Call error: ' + msg.payload.error); break;
+    }
+}
+
+// ── Chat ─────────────────────────────────────────────────────
+function appendChat(data) {
+    const div = document.getElementById('messages');
+    const isSelf = data.sender === myPeerID;
+    const el = document.createElement('div');
+    el.className = 'msg' + (isSelf ? ' self' : '');
+
+    const trustBadge = data.trust === 'verified'
+        ? '<span class="trust-badge verified">✓ verified</span>'
+        : '<span class="trust-badge unverified">⚠ unverified</span>';
+
+    el.innerHTML = `
+        <div class="nick">${esc(data.nick)}${isSelf ? '' : trustBadge}</div>
+        <div class="text">${esc(data.text)}</div>
+        <div class="time">${data.timestamp}</div>
+    `;
+    div.appendChild(el);
+    div.scrollTop = div.scrollHeight;
+}
+
+function sendChat() {
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    send('send_chat', { text });
+    // Show own message immediately
+    appendChat({
+        sender: myPeerID,
+        nick: document.getElementById('info-nick').textContent || 'Me',
+        text: text,
+        timestamp: new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+        trust: 'verified'
+    });
+    input.value = '';
+}
+
+// ── Peers ──────────────────────────────────────────────────────
+function renderPeers(peers) {
+    const div = document.getElementById('peer-list');
+    document.getElementById('peer-count').textContent = peers.length + ' peer(s)';
+
+    if (!peers.length) {
+        div.innerHTML = '<p style="color:var(--text2);text-align:center;margin-top:40px">No peers found. Make sure another NEC node is running on the same network.</p>';
+        return;
+    }
+
+    div.innerHTML = peers.map(p => `
+        <div class="peer-card">
+            <div class="sn">${p.safety_number}</div>
+            <div class="peer-id">${p.peer_id}</div>
+            <div style="margin-top:4px;font-size:12px;color:var(--text2)">
+                Status: <span style="color:${p.status==='verified'?'var(--green)':p.status==='blocked'?'var(--red)':'var(--yellow)'}">${p.status}</span>
+            </div>
+            <div class="actions">
+                ${p.status !== 'verified' ? `<button class="btn small success" onclick="verifyPeer('${p.peer_id}')">✓ Verify</button>` : ''}
+                <button class="btn small" onclick="callPeer('${p.peer_id}')">📞 Call</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderTrust(records) {
+    // Could add a trust panel, but for MVP just refresh peers
+    requestPeers();
+}
+
+function requestPeers() { send('get_peers', {}); }
+function verifyPeer(id) { send('verify_peer', { peer_id: id }); setTimeout(requestPeers, 300); }
+function callPeer(id) {
+    send('call_peer', { peer_id: id });
+    document.getElementById('call-status').textContent = 'Calling...';
+    document.getElementById('call-stats').style.display = 'grid';
+    document.getElementById('hangup-btn').style.display = 'block';
+    startCallStats();
+    // Switch to call tab
+    document.querySelector('[data-panel="calls"]').click();
+}
+function hangup() {
+    send('hangup', {});
+    document.getElementById('call-status').textContent = 'No active call';
+    document.getElementById('call-stats').style.display = 'none';
+    document.getElementById('hangup-btn').style.display = 'none';
+    stopCallStats();
+}
+
+// ── Call Stats ─────────────────────────────────────────────────
+function startCallStats() {
+    stopCallStats();
+    callStatsInterval = setInterval(() => send('get_callstats', {}), 1000);
+}
+function stopCallStats() {
+    if (callStatsInterval) { clearInterval(callStatsInterval); callStatsInterval = null; }
+}
+function renderCallStats(s) {
+    document.getElementById('call-status').textContent = `Call active (${Math.round(s.duration)}s)`;
+    document.getElementById('stat-latency').textContent = s.latency_ms.toFixed(1);
+    document.getElementById('stat-jitter').textContent = s.jitter_ms.toFixed(2);
+    document.getElementById('stat-sent').textContent = s.sent;
+    document.getElementById('stat-recv').textContent = s.recv;
+    document.getElementById('stat-lost').textContent = s.lost;
+    document.getElementById('stat-loss').textContent = s.loss_pct.toFixed(1);
+}
+
+// ── Info ────────────────────────────────────────────────────────
+async function fetchInfo() {
+    try {
+        const res = await fetch('/api/info');
+        const info = await res.json();
+        myPeerID = info.peer_id;
+        document.getElementById('info-peerid').textContent = info.peer_id;
+        document.getElementById('info-sn').textContent = info.safety_number;
+        document.getElementById('info-nick').textContent = info.nick;
+        document.getElementById('nick-display').textContent = info.nick;
+        document.getElementById('info-url').textContent = location.href;
+    } catch(e) {}
+}
+
+// ── Tab switching ──────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+        if (tab.dataset.panel === 'peers') requestPeers();
+    });
+});
+
+// ── Input handling ─────────────────────────────────────────────
+document.getElementById('chat-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') sendChat();
+});
+document.getElementById('send-btn').addEventListener('click', sendChat);
+
+// ── Escape HTML ────────────────────────────────────────────────
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+// ── Auto-refresh peers ─────────────────────────────────────────
+setInterval(requestPeers, 5000);
+
+// ── Start ──────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>
