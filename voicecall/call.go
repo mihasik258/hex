@@ -1,3 +1,7 @@
+// Package voicecall implements voice calls for NEC using direct libp2p
+// QUIC streams instead of WebRTC. This is more reliable on real networks
+// since it reuses the existing P2P connection rather than establishing
+// a separate WebRTC/ICE connection.
 package voicecall
 
 import (
@@ -10,46 +14,44 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/pion/webrtc/v4"
 )
 
-// CallManager handles WebRTC call lifecycle: signaling over libp2p QUIC
-// streams, PeerConnection management, DataChannel audio, and metrics.
+// AudioProtocolID is the libp2p protocol for audio streams.
+const AudioProtocolID = "/nec/audio/1.0.0"
+
+// CallManager handles voice call lifecycle over libp2p QUIC streams.
 type CallManager struct {
 	host   host.Host
 	mu     sync.Mutex
 	active *ActiveCall
-	OnCall func(remotePeer peer.ID, metrics *CallMetrics)  // Callback when call starts.
-	OnEnd  func(remotePeer peer.ID, final MetricsSnapshot) // Callback when call ends.
+	OnCall func(remotePeer peer.ID, metrics *CallMetrics)
+	OnEnd  func(remotePeer peer.ID, final MetricsSnapshot)
 }
 
 // ActiveCall represents an ongoing voice call.
 type ActiveCall struct {
 	RemotePeer peer.ID
-	PC         *webrtc.PeerConnection
-	DC         *webrtc.DataChannel
 	Metrics    *CallMetrics
-	sigStream  network.Stream // Keep signaling stream open for hangup notification.
+	stream     network.Stream // The audio stream.
 	ctx        context.Context
 	cancel     context.CancelFunc
-	lastSeq    uint32 // Last received sequence number for loss detection.
-	ended      bool   // Guard against double-hangup.
+	lastSeq    uint32
+	ended      bool
 }
 
-// NewCallManager creates a CallManager and registers the signaling stream handler.
+// NewCallManager creates a CallManager and registers the audio stream handler.
 func NewCallManager(h host.Host) *CallManager {
 	cm := &CallManager{host: h}
 
-	// Register handler for incoming call signaling.
-	h.SetStreamHandler(SignalProtocolID, func(s network.Stream) {
+	h.SetStreamHandler(AudioProtocolID, func(s network.Stream) {
 		cm.handleIncomingCall(s)
 	})
 
-	log.Printf("[call] Manager ready (protocol=%s)", SignalProtocolID)
+	log.Printf("[call] Manager ready (protocol=%s)", AudioProtocolID)
 	return cm
 }
 
-// Call initiates a voice call to the specified peer (caller side).
+// Call initiates a voice call to the specified peer.
 func (cm *CallManager) Call(ctx context.Context, target peer.ID) error {
 	cm.mu.Lock()
 	if cm.active != nil {
@@ -58,144 +60,46 @@ func (cm *CallManager) Call(ctx context.Context, target peer.ID) error {
 	}
 	cm.mu.Unlock()
 
-	// Open signaling stream.
-	s, err := cm.host.NewStream(ctx, target, SignalProtocolID)
+	// Open audio stream to the peer.
+	s, err := cm.host.NewStream(ctx, target, AudioProtocolID)
 	if err != nil {
-		return fmt.Errorf("open signaling stream: %w", err)
+		return fmt.Errorf("open audio stream: %w", err)
 	}
 
 	log.Printf("[call] Calling peer %s...", target.String()[:16])
-
-	// Create WebRTC PeerConnection (caller).
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		s.Close()
-		return fmt.Errorf("create peer connection: %w", err)
-	}
-
-	// Create DataChannel for audio.
-	dc, err := pc.CreateDataChannel("audio", &webrtc.DataChannelInit{
-		Ordered:        boolPtr(false), // Unordered for lower latency.
-		MaxRetransmits: uint16Ptr(0),   // No retransmits — real-time audio.
-	})
-	if err != nil {
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("create data channel: %w", err)
-	}
 
 	callCtx, callCancel := context.WithCancel(ctx)
 	metrics := NewCallMetrics()
 
 	call := &ActiveCall{
 		RemotePeer: target,
-		PC:         pc,
-		DC:         dc,
 		Metrics:    metrics,
-		sigStream:  s,
+		stream:     s,
 		ctx:        callCtx,
 		cancel:     callCancel,
 	}
-
-	// Handle incoming audio on this DataChannel.
-	dc.OnOpen(func() {
-		log.Printf("[call] DataChannel open — starting audio tone")
-		go cm.sendToneLoop(call)
-	})
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		cm.handleAudioPacket(call, msg.Data)
-	})
-
-	// ICE connection state monitoring.
-	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		log.Printf("[call] ICE state: %s", state.String())
-		if state == webrtc.ICEConnectionStateFailed {
-			cm.Hangup()
-		}
-	})
-
-	// Create and send SDP offer.
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("create offer: %w", err)
-	}
-	if err := pc.SetLocalDescription(offer); err != nil {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("set local desc: %w", err)
-	}
-
-	// Wait for ICE gathering to complete.
-	gatherDone := webrtc.GatheringCompletePromise(pc)
-	<-gatherDone
-
-	// Send offer with gathered candidates.
-	if err := WriteSignal(s, &SignalMessage{
-		Type:    SignalOffer,
-		Payload: pc.LocalDescription().SDP,
-	}); err != nil {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("send offer: %w", err)
-	}
-	log.Printf("[call] SDP offer sent")
-
-	// Read answer.
-	ansMsg, err := ReadSignal(s)
-	if err != nil {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("read answer: %w", err)
-	}
-	if ansMsg.Type == SignalHangup {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("call rejected by peer")
-	}
-	if ansMsg.Type != SignalAnswer {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("unexpected signal type: %s", ansMsg.Type)
-	}
-
-	answer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeAnswer,
-		SDP:  ansMsg.Payload,
-	}
-	if err := pc.SetRemoteDescription(answer); err != nil {
-		callCancel()
-		pc.Close()
-		s.Close()
-		return fmt.Errorf("set remote desc: %w", err)
-	}
-	log.Printf("[call] SDP answer received — call established!")
 
 	cm.mu.Lock()
 	cm.active = call
 	cm.mu.Unlock()
 
+	log.Printf("[call] Call established with %s!", target.String()[:16])
+
 	if cm.OnCall != nil {
 		cm.OnCall(target, metrics)
 	}
 
-	// Start metrics logging in background.
+	// Start sending audio.
+	go cm.sendAudioLoop(call)
+	// Start receiving audio.
+	go cm.recvAudioLoop(call)
+	// Start metrics logging.
 	go cm.metricsLoop(call)
-
-	// Listen for remote hangup in background.
-	go cm.listenForHangup(call)
 
 	return nil
 }
 
-// handleIncomingCall processes an incoming call (callee side).
+// handleIncomingCall processes an incoming call.
 func (cm *CallManager) handleIncomingCall(s network.Stream) {
 	remotePeer := s.Conn().RemotePeer()
 	log.Printf("[call] Incoming call from %s", remotePeer.String()[:16])
@@ -204,29 +108,6 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 	if cm.active != nil {
 		cm.mu.Unlock()
 		log.Printf("[call] Busy — rejecting call from %s", remotePeer.String()[:16])
-		_ = WriteSignal(s, &SignalMessage{Type: SignalHangup, Payload: "busy"})
-		s.Close()
-		return
-	}
-	cm.mu.Unlock()
-
-	// Read SDP offer.
-	offerMsg, err := ReadSignal(s)
-	if err != nil {
-		log.Printf("[call] Failed to read offer: %v", err)
-		s.Close()
-		return
-	}
-	if offerMsg.Type != SignalOffer {
-		log.Printf("[call] Expected offer, got %s", offerMsg.Type)
-		s.Close()
-		return
-	}
-
-	// Create PeerConnection (callee).
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		log.Printf("[call] Failed to create PC: %v", err)
 		s.Close()
 		return
 	}
@@ -236,111 +117,29 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 
 	call := &ActiveCall{
 		RemotePeer: remotePeer,
-		PC:         pc,
 		Metrics:    metrics,
-		sigStream:  s,
+		stream:     s,
 		ctx:        callCtx,
 		cancel:     callCancel,
 	}
 
-	// Handle DataChannel created by caller.
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		log.Printf("[call] DataChannel %q received", dc.Label())
-		call.DC = dc
-
-		dc.OnOpen(func() {
-			log.Printf("[call] DataChannel open — starting audio tone")
-			go cm.sendToneLoop(call)
-		})
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			cm.handleAudioPacket(call, msg.Data)
-		})
-	})
-
-	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		log.Printf("[call] ICE state: %s", state.String())
-		if state == webrtc.ICEConnectionStateFailed {
-			cm.Hangup()
-		}
-	})
-
-	// Set remote description (offer).
-	offer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  offerMsg.Payload,
-	}
-	if err := pc.SetRemoteDescription(offer); err != nil {
-		log.Printf("[call] Set remote desc: %v", err)
-		callCancel()
-		pc.Close()
-		s.Close()
-		return
-	}
-
-	// Create and send answer.
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		log.Printf("[call] Create answer: %v", err)
-		callCancel()
-		pc.Close()
-		s.Close()
-		return
-	}
-	if err := pc.SetLocalDescription(answer); err != nil {
-		log.Printf("[call] Set local desc: %v", err)
-		callCancel()
-		pc.Close()
-		s.Close()
-		return
-	}
-
-	gatherDone := webrtc.GatheringCompletePromise(pc)
-	<-gatherDone
-
-	if err := WriteSignal(s, &SignalMessage{
-		Type:    SignalAnswer,
-		Payload: pc.LocalDescription().SDP,
-	}); err != nil {
-		log.Printf("[call] Send answer: %v", err)
-		callCancel()
-		pc.Close()
-		s.Close()
-		return
-	}
-
-	log.Printf("[call] SDP answer sent — call established!")
-
-	cm.mu.Lock()
 	cm.active = call
 	cm.mu.Unlock()
+
+	log.Printf("[call] Call established with %s!", remotePeer.String()[:16])
 
 	if cm.OnCall != nil {
 		cm.OnCall(remotePeer, metrics)
 	}
 
+	// Start audio exchange.
+	go cm.sendAudioLoop(call)
+	go cm.recvAudioLoop(call)
 	go cm.metricsLoop(call)
-	go cm.listenForHangup(call)
 }
 
-// listenForHangup waits for a hangup signal on the signaling stream.
-func (cm *CallManager) listenForHangup(call *ActiveCall) {
-	for {
-		msg, err := ReadSignal(call.sigStream)
-		if err != nil {
-			// Stream closed = remote disconnected.
-			cm.cleanupCall(call, false)
-			return
-		}
-		if msg.Type == SignalHangup {
-			log.Printf("[call] Remote peer hung up")
-			cm.cleanupCall(call, false)
-			return
-		}
-	}
-}
-
-// sendToneLoop generates and sends test audio tone packets every 20ms.
-func (cm *CallManager) sendToneLoop(call *ActiveCall) {
+// sendAudioLoop generates and sends audio tone packets every 20ms.
+func (cm *CallManager) sendAudioLoop(call *ActiveCall) {
 	var seq uint32
 	sampleOffset := 0
 	ticker := time.NewTicker(ToneInterval)
@@ -351,14 +150,12 @@ func (cm *CallManager) sendToneLoop(call *ActiveCall) {
 		case <-call.ctx.Done():
 			return
 		case <-ticker.C:
-			if call.DC == nil || call.DC.ReadyState() != webrtc.DataChannelStateOpen {
-				continue
-			}
-
 			pkt := GenerateTonePacket(seq, sampleOffset)
 			data := MarshalAudioPacket(pkt)
 
-			if err := call.DC.Send(data); err != nil {
+			if _, err := call.stream.Write(data); err != nil {
+				// Stream closed = remote hung up.
+				cm.cleanupCall(call)
 				return
 			}
 			call.Metrics.RecordSent(len(data))
@@ -369,22 +166,49 @@ func (cm *CallManager) sendToneLoop(call *ActiveCall) {
 	}
 }
 
-// handleAudioPacket processes a received audio packet, updating metrics.
-func (cm *CallManager) handleAudioPacket(call *ActiveCall, data []byte) {
-	pkt, err := UnmarshalAudioPacket(data)
-	if err != nil {
-		return
-	}
+// recvAudioLoop reads audio packets from the stream.
+func (cm *CallManager) recvAudioLoop(call *ActiveCall) {
+	// Each audio packet = 12 bytes header + TonePacketSize bytes data.
+	pktSize := 12 + TonePacketSize
+	buf := make([]byte, pktSize)
 
-	sendTime := time.Unix(0, pkt.Timestamp)
-	call.Metrics.RecordReceived(len(data), sendTime)
+	for {
+		// Read exactly one packet.
+		n, err := readFull(call.stream, buf)
+		if err != nil || n == 0 {
+			// Stream closed = remote hung up.
+			cm.cleanupCall(call)
+			return
+		}
 
-	// Detect lost packets via sequence gap.
-	if call.lastSeq > 0 && pkt.Sequence > call.lastSeq+1 {
-		lost := int(pkt.Sequence - call.lastSeq - 1)
-		call.Metrics.RecordLost(lost)
+		pkt, err := UnmarshalAudioPacket(buf[:n])
+		if err != nil {
+			continue
+		}
+
+		sendTime := time.Unix(0, pkt.Timestamp)
+		call.Metrics.RecordReceived(n, sendTime)
+
+		// Detect lost packets via sequence gap.
+		if call.lastSeq > 0 && pkt.Sequence > call.lastSeq+1 {
+			lost := int(pkt.Sequence - call.lastSeq - 1)
+			call.Metrics.RecordLost(lost)
+		}
+		call.lastSeq = pkt.Sequence
 	}
-	call.lastSeq = pkt.Sequence
+}
+
+// readFull reads exactly len(buf) bytes from the stream.
+func readFull(s network.Stream, buf []byte) (int, error) {
+	total := 0
+	for total < len(buf) {
+		n, err := s.Read(buf[total:])
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // metricsLoop logs call metrics every 3 seconds.
@@ -402,7 +226,7 @@ func (cm *CallManager) metricsLoop(call *ActiveCall) {
 	}
 }
 
-// Hangup ends the active call and notifies the remote peer.
+// Hangup ends the active call.
 func (cm *CallManager) Hangup() {
 	cm.mu.Lock()
 	call := cm.active
@@ -412,12 +236,11 @@ func (cm *CallManager) Hangup() {
 		return
 	}
 
-	// Send hangup signal to remote peer before closing.
-	cm.cleanupCall(call, true)
+	cm.cleanupCall(call)
 }
 
-// cleanupCall tears down the call, optionally sending a hangup to remote.
-func (cm *CallManager) cleanupCall(call *ActiveCall, sendHangup bool) {
+// cleanupCall tears down the call.
+func (cm *CallManager) cleanupCall(call *ActiveCall) {
 	cm.mu.Lock()
 	if call.ended {
 		cm.mu.Unlock()
@@ -429,19 +252,8 @@ func (cm *CallManager) cleanupCall(call *ActiveCall, sendHangup bool) {
 	}
 	cm.mu.Unlock()
 
-	// Send hangup to remote peer.
-	if sendHangup && call.sigStream != nil {
-		_ = WriteSignal(call.sigStream, &SignalMessage{Type: SignalHangup, Payload: "bye"})
-	}
-
 	call.cancel()
-	if call.DC != nil {
-		call.DC.Close()
-	}
-	call.PC.Close()
-	if call.sigStream != nil {
-		call.sigStream.Close()
-	}
+	call.stream.Close()
 
 	final := call.Metrics.Snapshot()
 	log.Printf("[call] Call ended. Final: %s", FormatSnapshot(final))
@@ -467,6 +279,3 @@ func (cm *CallManager) ActiveCallMetrics() *CallMetrics {
 	}
 	return cm.active.Metrics
 }
-
-func boolPtr(b bool) *bool       { return &b }
-func uint16Ptr(v uint16) *uint16 { return &v }
