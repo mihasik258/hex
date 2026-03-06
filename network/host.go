@@ -1,6 +1,6 @@
-// Package network provides core P2P networking primitives for the AroundFM
-// mesh messenger. It wraps go-libp2p to manage host creation, peer discovery,
-// and cryptographic identity.
+// Package network provides core P2P networking primitives for the NEC
+// (Novatorskaya Entryways Connections) mesh messenger. It wraps go-libp2p to
+// manage host creation, peer discovery, and cryptographic identity.
 package network
 
 import (

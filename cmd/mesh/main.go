@@ -1,4 +1,4 @@
-// AroundFM Mesh Messenger — entry point.
+// NEC (Novatorskaya Entryways Connections) Mesh Messenger — entry point.
 //
 // This binary starts a P2P node with Ed25519 identity, QUIC transport,
 // and mDNS discovery. It prints the node's identity information including
@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"aroundfm/network"
+	"nec/network"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 
 	// ── Print identity information ──────────────────────────────────────
 	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("  AroundFM Mesh Messenger")
+	fmt.Println("  NEC — Novatorskaya Entryways Connections")
 	fmt.Println("═══════════════════════════════════════════════════")
 	fmt.Printf("  PeerID:        %s\n", node.PeerID())
 	fmt.Printf("  Safety Number: %s\n", network.SafetyNumber(node.PeerID()))

@@ -7,9 +7,9 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
 
-// ServiceTag is the mDNS service identifier. All AroundFM nodes advertise and
+// ServiceTag is the mDNS service identifier. All NEC nodes advertise and
 // discover each other using this tag on the local network.
-const ServiceTag = "aroundfm.mesh.local"
+const ServiceTag = "nec.mesh.local"
 
 // discoveryNotifee is notified by mDNS when new peers appear on the LAN.
 // It automatically attempts to connect to every discovered peer.
@@ -36,7 +36,7 @@ func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 // SetupMDNS initializes mDNS-based peer discovery on the local network.
-// It broadcasts the node's presence and listens for other AroundFM nodes.
+// It broadcasts the node's presence and listens for other NEC nodes.
 // The returned mdns.Service can be used to close the discovery later.
 func SetupMDNS(node *Node) mdns.Service {
 	notifee := &discoveryNotifee{node: node}
