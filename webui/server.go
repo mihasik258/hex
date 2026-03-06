@@ -103,6 +103,15 @@ func NewServer(
 		})
 	})
 
+	callMgr.OnCallIncoming = func(remotePeer peer.ID) {
+		s.broadcast(WSMessage{
+			Type: "call_incoming",
+			Payload: jsonRaw(map[string]string{
+				"peer_id": remotePeer.String(),
+			}),
+		})
+	}
+
 	return s
 }
 
@@ -300,6 +309,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 			Type:    "call_ended",
 			Payload: jsonRaw(map[string]string{"reason": "local_hangup"}),
 		})
+
+	case "accept_call":
+		s.callMgr.AcceptCall()
 
 	case "get_callstats":
 		m := s.callMgr.ActiveCallMetrics()

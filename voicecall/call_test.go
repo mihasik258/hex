@@ -38,6 +38,12 @@ func TestCallEstablishment(t *testing.T) {
 	cmB := voicecall.NewCallManager(hostB)
 
 	callEstablished := make(chan struct{}, 1)
+
+	cmB.OnCallIncoming = func(remote peer.ID) {
+		t.Logf("B: incoming call from %s, accepting...", remote.String()[:16])
+		cmB.AcceptCall()
+	}
+
 	cmB.OnCall = func(remote peer.ID, m *voicecall.CallMetrics) {
 		t.Logf("B: call established with %s", remote.String()[:16])
 		callEstablished <- struct{}{}

@@ -21,11 +21,12 @@ const AudioProtocolID = "/nec/audio/1.0.0"
 
 // CallManager handles voice call lifecycle over libp2p QUIC streams.
 type CallManager struct {
-	host   host.Host
-	mu     sync.Mutex
-	active *ActiveCall
-	OnCall func(remotePeer peer.ID, metrics *CallMetrics)
-	OnEnd  func(remotePeer peer.ID, final MetricsSnapshot)
+	host           host.Host
+	mu             sync.Mutex
+	active         *ActiveCall
+	OnCall         func(remotePeer peer.ID, metrics *CallMetrics)
+	OnCallIncoming func(remotePeer peer.ID)
+	OnEnd          func(remotePeer peer.ID, final MetricsSnapshot)
 }
 
 // ActiveCall represents an ongoing voice call.
@@ -37,6 +38,7 @@ type ActiveCall struct {
 	cancel     context.CancelFunc
 	lastSeq    uint32
 	ended      bool
+	pending    bool
 }
 
 // NewCallManager creates a CallManager and registers the audio stream handler.
@@ -121,15 +123,32 @@ func (cm *CallManager) handleIncomingCall(s network.Stream) {
 		stream:     s,
 		ctx:        callCtx,
 		cancel:     callCancel,
+		pending:    true,
 	}
 
 	cm.active = call
 	cm.mu.Unlock()
 
-	log.Printf("[call] Call established with %s!", remotePeer.String()[:16])
+	if cm.OnCallIncoming != nil {
+		cm.OnCallIncoming(remotePeer)
+	}
+}
+
+// AcceptCall starts the audio exchange for a pending call.
+func (cm *CallManager) AcceptCall() {
+	cm.mu.Lock()
+	call := cm.active
+	if call == nil || !call.pending {
+		cm.mu.Unlock()
+		return
+	}
+	call.pending = false
+	cm.mu.Unlock()
+
+	log.Printf("[call] Call accepted with %s!", call.RemotePeer.String()[:16])
 
 	if cm.OnCall != nil {
-		cm.OnCall(remotePeer, metrics)
+		cm.OnCall(call.RemotePeer, call.Metrics)
 	}
 
 	// Start audio exchange.

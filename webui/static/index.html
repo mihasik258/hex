@@ -425,6 +425,18 @@
     <div class="panel" id="panel-calls">
         <div class="call-panel">
             <div id="call-status" style="font-size:14px;color:var(--text2)">No active call</div>
+
+            <div id="incoming-call"
+                style="display:none; flex-direction:column; gap:10px; align-items:center; background:var(--surface2); padding:15px; border-radius:10px; border: 1px solid var(--accent); width:100%">
+                <div style="font-weight:600; color:var(--accent)">📞 Incoming Call</div>
+                <div id="incoming-caller"
+                    style="font-family:monospace; font-size:11px; color:var(--text2); word-break:break-all"></div>
+                <div style="display:flex; gap:10px; margin-top:5px">
+                    <button class="btn success" onclick="acceptCall()">Accept</button>
+                    <button class="btn danger" onclick="declineCall()">Decline</button>
+                </div>
+            </div>
+
             <div class="stat-grid" id="call-stats" style="display:none">
                 <div class="stat-card">
                     <div class="value" id="stat-latency">–</div>
@@ -538,6 +550,7 @@
                 case 'peers': renderPeers(msg.payload); break;
                 case 'trust': requestPeers(); break;
                 case 'callstats': renderCallStats(msg.payload); break;
+                case 'call_incoming': handleIncomingCall(msg.payload); break;
                 case 'call_error': alert('Call error: ' + msg.payload.error); resetCallUI(); break;
                 case 'call_ended': resetCallUI(); break;
             }
@@ -696,11 +709,42 @@
         }
         function hangup() { send('hangup', {}); resetCallUI(); }
         function resetCallUI() {
+            document.getElementById('call-status').style.display = 'block';
             document.getElementById('call-status').textContent = 'No active call';
             document.getElementById('call-stats').style.display = 'none';
             document.getElementById('hangup-btn').style.display = 'none';
+            document.getElementById('incoming-call').style.display = 'none';
             stopCallStats();
             stopCallTone();
+            stopRingTone();
+        }
+
+        function handleIncomingCall(d) {
+            document.getElementById('call-status').style.display = 'none';
+            const inc = document.getElementById('incoming-call');
+            inc.style.display = 'flex';
+            document.getElementById('incoming-caller').textContent = d.peer_id;
+            document.querySelector('[data-panel="calls"]').click();
+            startRingTone();
+        }
+
+        function acceptCall() {
+            stopRingTone();
+            document.getElementById('incoming-call').style.display = 'none';
+            document.getElementById('call-status').style.display = 'block';
+            send('accept_call', {});
+            document.getElementById('call-status').textContent = 'Connecting...';
+            document.getElementById('call-stats').style.display = 'grid';
+            document.getElementById('hangup-btn').style.display = 'block';
+            startCallStats();
+        }
+
+        function declineCall() {
+            stopRingTone();
+            document.getElementById('incoming-call').style.display = 'none';
+            document.getElementById('call-status').style.display = 'block';
+            send('hangup', {});
+            resetCallUI();
         }
 
         function startCallStats() { stopCallStats(); callStatsInterval = setInterval(() => send('get_callstats', {}), 1000); }
@@ -739,6 +783,31 @@
                 if (audioCtx) { audioCtx.close(); audioCtx = null; }
                 gainNode = null;
             } catch (e) { }
+        }
+
+        let ringToneInterval;
+        function startRingTone() {
+            if (ringToneInterval) return;
+            ringToneInterval = setInterval(() => {
+                try {
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = ctx.createOscillator();
+                    const g = ctx.createGain();
+                    osc.frequency.setValueAtTime(880, ctx.currentTime);
+                    g.gain.setValueAtTime(0.1, ctx.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+                    osc.connect(g);
+                    g.connect(ctx.destination);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.5);
+                } catch (e) { }
+            }, 2000);
+        }
+        function stopRingTone() {
+            if (ringToneInterval) {
+                clearInterval(ringToneInterval);
+                ringToneInterval = null;
+            }
         }
 
         // ── Info ────────────────────────────────────────────────────────
