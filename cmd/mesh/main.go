@@ -88,6 +88,9 @@ func main() {
 	}
 	defer chatRoom.Close()
 
+	// ── Initialize Courier manager (Data Mules) ─────────────────────────
+	courierMgr := messaging.NewCourierManager(node.Host)
+
 	// ── Start store cleanup ticker ──────────────────────────────────────
 	cleanupTicker := time.NewTicker(5 * time.Minute)
 	defer cleanupTicker.Stop()
@@ -102,7 +105,7 @@ func main() {
 
 	// ── Start Web UI or CLI message handler ────────────────────────────
 	if *httpAddr != "" {
-		wuiServer := webui.NewServer(node.Host, chatRoom, trustStore, msgStore, callMgr, *nick)
+		wuiServer := webui.NewServer(node.Host, chatRoom, trustStore, msgStore, callMgr, courierMgr, *nick)
 		go func() {
 			if err := wuiServer.Start(node.Context(), *httpAddr); err != nil {
 				log.Printf("[webui] Server error: %v", err)

@@ -42,13 +42,14 @@ type WSMessage struct {
 // Server manages the HTTP/WebSocket server and bridges browser clients
 // to the P2P node subsystems.
 type Server struct {
-	host    host.Host
-	chat    *messaging.ChatRoom
-	trust   *messaging.TrustStore
-	store   *messaging.MessageStore
-	callMgr *voicecall.CallManager
-	selfID  peer.ID
-	nick    string
+	host       host.Host
+	chat       *messaging.ChatRoom
+	trust      *messaging.TrustStore
+	store      *messaging.MessageStore
+	callMgr    *voicecall.CallManager
+	courierMgr *messaging.CourierManager
+	selfID     peer.ID
+	nick       string
 
 	mu      sync.Mutex
 	clients map[*websocket.Conn]bool
@@ -61,17 +62,19 @@ func NewServer(
 	trust *messaging.TrustStore,
 	store *messaging.MessageStore,
 	callMgr *voicecall.CallManager,
+	courierMgr *messaging.CourierManager,
 	nick string,
 ) *Server {
 	s := &Server{
-		host:    h,
-		chat:    chat,
-		trust:   trust,
-		store:   store,
-		callMgr: callMgr,
-		selfID:  h.ID(),
-		nick:    nick,
-		clients: make(map[*websocket.Conn]bool),
+		host:       h,
+		chat:       chat,
+		trust:      trust,
+		store:      store,
+		callMgr:    callMgr,
+		courierMgr: courierMgr,
+		selfID:     h.ID(),
+		nick:       nick,
+		clients:    make(map[*websocket.Conn]bool),
 	}
 
 	// Register DM handler so incoming direct messages get forwarded to browsers.
@@ -255,10 +258,17 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 		}
 		go func() {
 			if err := messaging.SendDM(context.Background(), s.host, s.selfID, s.nick, pid, payload.Text); err != nil {
-				log.Printf("[webui] DM error: %v", err)
+				log.Printf("[webui] DM stream to %s failed, queueing in Outbox: %v", pid.String()[:16], err)
+				msg, _ := messaging.NewChatMessage(s.selfID, s.nick, payload.Text)
+				msg.Type = messaging.TypeDM
+				s.courierMgr.QueueInOutbox(pid, msg)
+
 				s.sendToConn(conn, WSMessage{
-					Type:    "dm_error",
-					Payload: jsonRaw(map[string]string{"error": err.Error()}),
+					Type: "courier_queued",
+					Payload: jsonRaw(map[string]string{
+						"peer_id": payload.PeerID,
+						"text":    payload.Text,
+					}),
 				})
 			}
 		}()
@@ -334,6 +344,25 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 				"jitter_ms":  snap.JitterMs,
 				"latency_ms": snap.AvgLatencyMs,
 			}),
+		})
+
+	case "collect_courier":
+		go func() {
+			collected, err := s.courierMgr.CollectFromPeers(context.Background())
+			if err != nil {
+				log.Printf("[webui] Collect courier error: %v", err)
+			}
+			s.sendToConn(conn, WSMessage{
+				Type:    "courier_collected",
+				Payload: jsonRaw(map[string]int{"collected": collected}),
+			})
+		}()
+
+	case "get_courier_stats":
+		stats := s.courierMgr.Stats()
+		s.sendToConn(conn, WSMessage{
+			Type:    "courier_stats",
+			Payload: jsonRaw(stats),
 		})
 	}
 }
