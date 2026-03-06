@@ -77,14 +77,12 @@ func NewServer(
 	// Register DM handler so incoming direct messages get forwarded to browsers.
 	messaging.RegisterDMHandler(h, func(msg *messaging.Message) {
 		senderID, _ := peer.Decode(msg.Sender)
-		if s.trust.IsBlocked(senderID) {
-			return
-		}
 		s.trust.RecordPeer(senderID, msg.SenderNick)
 
-		trustTag := "unverified"
-		if s.trust.IsVerified(senderID) {
-			trustTag = "verified"
+		// Only deliver DMs from verified peers.
+		if !s.trust.IsVerified(senderID) {
+			log.Printf("[webui] Blocked DM from unverified peer %s", msg.Sender[:8])
+			return
 		}
 
 		displayNick := msg.SenderNick
@@ -100,7 +98,7 @@ func NewServer(
 				"nick":      displayNick,
 				"text":      msg.Payload,
 				"timestamp": time.UnixMilli(msg.Timestamp).Format("15:04:05"),
-				"trust":     trustTag,
+				"trust":     "verified",
 			}),
 		})
 	})
@@ -371,15 +369,14 @@ func (s *Server) forwardMessages(ctx context.Context) {
 				return
 			}
 			senderID, _ := peer.Decode(msg.Sender)
-			if s.trust.IsBlocked(senderID) {
-				continue
-			}
 			s.trust.RecordPeer(senderID, msg.SenderNick)
 
-			trustTag := "unverified"
-			if s.trust.IsVerified(senderID) {
-				trustTag = "verified"
+			// Only deliver messages from verified peers.
+			if !s.trust.IsVerified(senderID) {
+				continue
 			}
+
+			trustTag := "verified"
 
 			switch msg.Type {
 			case messaging.TypeChat:

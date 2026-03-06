@@ -482,130 +482,130 @@
     </div>
 
     <script>
-let ws, myPeerID = '', myNick = '', callStatsInterval;
+        let ws, myPeerID = '', myNick = '', callStatsInterval;
 
-// ── localStorage Persistence ───────────────────────────────────
-const STORE_KEY = 'nec_messages';
-const DM_STORE_KEY = 'nec_dm_messages';
-const MAX_STORED = 200;
+        // ── localStorage Persistence ───────────────────────────────────
+        const STORE_KEY = 'nec_messages';
+        const DM_STORE_KEY = 'nec_dm_messages';
+        const MAX_STORED = 200;
 
-function loadGlobalMessages() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch(e) { return []; }
-}
-function saveGlobalMessages(msgs) {
-    localStorage.setItem(STORE_KEY, JSON.stringify(msgs.slice(-MAX_STORED)));
-}
-function loadDMMessages() {
-    try { return JSON.parse(localStorage.getItem(DM_STORE_KEY)) || {}; } catch(e) { return {}; }
-}
-function saveDMMessages(dms) {
-    // Trim each DM conversation to MAX_STORED
-    const trimmed = {};
-    for (const [k, v] of Object.entries(dms)) {
-        trimmed[k] = v.slice(-MAX_STORED);
-    }
-    localStorage.setItem(DM_STORE_KEY, JSON.stringify(trimmed));
-}
-
-let globalMessages = loadGlobalMessages();
-let dmMessages = loadDMMessages();
-
-// ── WebSocket ──────────────────────────────────────────────────
-function connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => {
-        document.getElementById('ws-status').className = 'status-dot on';
-        document.getElementById('conn-text').textContent = 'Connected';
-        requestPeers(); fetchInfo();
-    };
-    ws.onclose = () => {
-        document.getElementById('ws-status').className = 'status-dot off';
-        document.getElementById('conn-text').textContent = 'Reconnecting...';
-        setTimeout(connect, 2000);
-    };
-    ws.onmessage = e => handleMessage(JSON.parse(e.data));
-}
-
-function send(type, payload) {
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, payload }));
-}
-
-function handleMessage(msg) {
-    switch (msg.type) {
-        case 'chat': handleIncomingChat(msg.payload); break;
-        case 'dm': handleIncomingDM(msg.payload); break;
-        case 'peers': renderPeers(msg.payload); break;
-        case 'trust': requestPeers(); break;
-        case 'callstats': renderCallStats(msg.payload); break;
-        case 'call_error': alert('Call error: ' + msg.payload.error); resetCallUI(); break;
-        case 'call_ended': resetCallUI(); break;
-    }
-}
-
-// ── Global Chat ────────────────────────────────────────────────
-function handleIncomingChat(d) {
-    if (d.sender === myPeerID) return; // Skip own echo
-    const entry = { nick: d.nick, text: d.text, time: d.timestamp, sender: d.sender, trust: d.trust, self: false };
-    globalMessages.push(entry);
-    saveGlobalMessages(globalMessages);
-    renderGlobalChat();
-}
-
-function sendChat() {
-    const input = document.getElementById('chat-input');
-    const text = input.value.trim();
-    if (!text) return;
-    send('send_chat', { text });
-    const entry = { nick: myNick, text, time: timeNow(), sender: myPeerID, trust: 'verified', self: true };
-    globalMessages.push(entry);
-    saveGlobalMessages(globalMessages);
-    renderGlobalChat();
-    input.value = '';
-}
-
-function renderGlobalChat() {
-    const div = document.getElementById('messages');
-    div.innerHTML = globalMessages.map(m => msgHTML(m.nick, m.text, m.time, m.self, m.trust, false)).join('');
-    div.scrollTop = div.scrollHeight;
-}
-
-// ── Direct Messages ────────────────────────────────────────────
-function handleIncomingDM(d) {
-    const peerID = d.sender;
-    if (!dmMessages[peerID]) dmMessages[peerID] = [];
-    dmMessages[peerID].push({ nick: d.nick, text: d.text, time: d.timestamp, self: false, trust: d.trust });
-    saveDMMessages(dmMessages);
-
-    ensureDMTab(peerID, d.nick);
-
-    const sid = shortID(peerID);
-    const panel = document.getElementById('panel-dm-' + sid);
-    if (panel?.classList.contains('active')) {
-        renderDMChat(peerID);
-    } else {
-        const tab = document.querySelector(`[data-panel="dm-${sid}"]`);
-        if (tab && !tab.querySelector('.unread')) {
-            tab.innerHTML += '<span class="unread">!</span>';
+        function loadGlobalMessages() {
+            try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch (e) { return []; }
         }
-    }
-}
+        function saveGlobalMessages(msgs) {
+            localStorage.setItem(STORE_KEY, JSON.stringify(msgs.slice(-MAX_STORED)));
+        }
+        function loadDMMessages() {
+            try { return JSON.parse(localStorage.getItem(DM_STORE_KEY)) || {}; } catch (e) { return {}; }
+        }
+        function saveDMMessages(dms) {
+            // Trim each DM conversation to MAX_STORED
+            const trimmed = {};
+            for (const [k, v] of Object.entries(dms)) {
+                trimmed[k] = v.slice(-MAX_STORED);
+            }
+            localStorage.setItem(DM_STORE_KEY, JSON.stringify(trimmed));
+        }
 
-function ensureDMTab(peerID, nick) {
-    const sid = shortID(peerID);
-    if (document.getElementById('panel-dm-' + sid)) return;
+        let globalMessages = loadGlobalMessages();
+        let dmMessages = loadDMMessages();
 
-    const tab = document.createElement('div');
-    tab.className = 'tab dm-tab';
-    tab.dataset.panel = 'dm-' + sid;
-    tab.textContent = '🔒 ' + (nick || sid);
-    tab.addEventListener('click', () => switchTab(tab));
-    document.getElementById('tab-bar').appendChild(tab);
+        // ── WebSocket ──────────────────────────────────────────────────
+        function connect() {
+            const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+            ws = new WebSocket(`${proto}://${location.host}/ws`);
+            ws.onopen = () => {
+                document.getElementById('ws-status').className = 'status-dot on';
+                document.getElementById('conn-text').textContent = 'Connected';
+                requestPeers(); fetchInfo();
+            };
+            ws.onclose = () => {
+                document.getElementById('ws-status').className = 'status-dot off';
+                document.getElementById('conn-text').textContent = 'Reconnecting...';
+                setTimeout(connect, 2000);
+            };
+            ws.onmessage = e => handleMessage(JSON.parse(e.data));
+        }
 
-    const panel = document.createElement('div');
-    panel.className = 'panel';
-    panel.id = 'panel-dm-' + sid;
-    panel.innerHTML = `
+        function send(type, payload) {
+            if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, payload }));
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'chat': handleIncomingChat(msg.payload); break;
+                case 'dm': handleIncomingDM(msg.payload); break;
+                case 'peers': renderPeers(msg.payload); break;
+                case 'trust': requestPeers(); break;
+                case 'callstats': renderCallStats(msg.payload); break;
+                case 'call_error': alert('Call error: ' + msg.payload.error); resetCallUI(); break;
+                case 'call_ended': resetCallUI(); break;
+            }
+        }
+
+        // ── Global Chat ────────────────────────────────────────────────
+        function handleIncomingChat(d) {
+            if (d.sender === myPeerID) return; // Skip own echo
+            const entry = { nick: d.nick, text: d.text, time: d.timestamp, sender: d.sender, trust: d.trust, self: false };
+            globalMessages.push(entry);
+            saveGlobalMessages(globalMessages);
+            renderGlobalChat();
+        }
+
+        function sendChat() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+            send('send_chat', { text });
+            const entry = { nick: myNick, text, time: timeNow(), sender: myPeerID, trust: 'verified', self: true };
+            globalMessages.push(entry);
+            saveGlobalMessages(globalMessages);
+            renderGlobalChat();
+            input.value = '';
+        }
+
+        function renderGlobalChat() {
+            const div = document.getElementById('messages');
+            div.innerHTML = globalMessages.map(m => msgHTML(m.nick, m.text, m.time, m.self, m.trust, false)).join('');
+            div.scrollTop = div.scrollHeight;
+        }
+
+        // ── Direct Messages ────────────────────────────────────────────
+        function handleIncomingDM(d) {
+            const peerID = d.sender;
+            if (!dmMessages[peerID]) dmMessages[peerID] = [];
+            dmMessages[peerID].push({ nick: d.nick, text: d.text, time: d.timestamp, self: false, trust: d.trust });
+            saveDMMessages(dmMessages);
+
+            ensureDMTab(peerID, d.nick);
+
+            const sid = shortID(peerID);
+            const panel = document.getElementById('panel-dm-' + sid);
+            if (panel?.classList.contains('active')) {
+                renderDMChat(peerID);
+            } else {
+                const tab = document.querySelector(`[data-panel="dm-${sid}"]`);
+                if (tab && !tab.querySelector('.unread')) {
+                    tab.innerHTML += '<span class="unread">!</span>';
+                }
+            }
+        }
+
+        function ensureDMTab(peerID, nick) {
+            const sid = shortID(peerID);
+            if (document.getElementById('panel-dm-' + sid)) return;
+
+            const tab = document.createElement('div');
+            tab.className = 'tab dm-tab';
+            tab.dataset.panel = 'dm-' + sid;
+            tab.textContent = '🔒 ' + (nick || sid);
+            tab.addEventListener('click', () => switchTab(tab));
+            document.getElementById('tab-bar').appendChild(tab);
+
+            const panel = document.createElement('div');
+            panel.className = 'panel';
+            panel.id = 'panel-dm-' + sid;
+            panel.innerHTML = `
         <div class="messages" id="dm-msgs-${sid}"></div>
         <div class="input-bar">
             <input type="text" id="dm-input-${sid}" placeholder="Private message..." autocomplete="off"
@@ -613,151 +613,186 @@ function ensureDMTab(peerID, nick) {
             <button class="btn" style="background:var(--accent2)" onclick="sendDM('${peerID}','${sid}')">Send</button>
         </div>
     `;
-    document.body.appendChild(panel);
-}
+            document.body.appendChild(panel);
+        }
 
-function sendDM(peerID, sid) {
-    const input = document.getElementById('dm-input-' + sid);
-    const text = input.value.trim();
-    if (!text) return;
-    send('send_dm', { peer_id: peerID, text });
-    if (!dmMessages[peerID]) dmMessages[peerID] = [];
-    dmMessages[peerID].push({ nick: myNick, text, time: timeNow(), self: true, trust: 'verified' });
-    saveDMMessages(dmMessages);
-    renderDMChat(peerID);
-    input.value = '';
-}
+        function sendDM(peerID, sid) {
+            const input = document.getElementById('dm-input-' + sid);
+            const text = input.value.trim();
+            if (!text) return;
+            send('send_dm', { peer_id: peerID, text });
+            if (!dmMessages[peerID]) dmMessages[peerID] = [];
+            dmMessages[peerID].push({ nick: myNick, text, time: timeNow(), self: true, trust: 'verified' });
+            saveDMMessages(dmMessages);
+            renderDMChat(peerID);
+            input.value = '';
+        }
 
-function renderDMChat(peerID) {
-    const sid = shortID(peerID);
-    const div = document.getElementById('dm-msgs-' + sid);
-    if (!div) return;
-    const msgs = dmMessages[peerID] || [];
-    div.innerHTML = msgs.map(m => msgHTML(m.nick, m.text, m.time, m.self, m.trust, true)).join('');
-    div.scrollTop = div.scrollHeight;
-}
+        function renderDMChat(peerID) {
+            const sid = shortID(peerID);
+            const div = document.getElementById('dm-msgs-' + sid);
+            if (!div) return;
+            const msgs = dmMessages[peerID] || [];
+            div.innerHTML = msgs.map(m => msgHTML(m.nick, m.text, m.time, m.self, m.trust, true)).join('');
+            div.scrollTop = div.scrollHeight;
+        }
 
-function openDM(peerID, nick) {
-    const sid = shortID(peerID);
-    ensureDMTab(peerID, nick || sid);
-    const tab = document.querySelector(`[data-panel="dm-${sid}"]`);
-    switchTab(tab);
-    renderDMChat(peerID);
-}
+        function openDM(peerID, nick) {
+            const sid = shortID(peerID);
+            ensureDMTab(peerID, nick || sid);
+            const tab = document.querySelector(`[data-panel="dm-${sid}"]`);
+            switchTab(tab);
+            renderDMChat(peerID);
+        }
 
-// ── Shared message HTML ────────────────────────────────────────
-function msgHTML(nick, text, time, isSelf, trust, isDM) {
-    const cls = 'msg' + (isSelf ? ' self' : '') + (isDM ? ' dm-msg' : '');
-    const badge = isSelf ? '' : trust === 'verified'
-        ? '<span class="trust-badge verified">✓</span>'
-        : '<span class="trust-badge unverified">⚠</span>';
-    return `<div class="${cls}"><div class="nick">${esc(nick)}${badge}</div><div class="text">${esc(text)}</div><div class="time">${time}</div></div>`;
-}
+        // ── Shared message HTML ────────────────────────────────────────
+        function msgHTML(nick, text, time, isSelf, trust, isDM) {
+            const cls = 'msg' + (isSelf ? ' self' : '') + (isDM ? ' dm-msg' : '');
+            const badge = isSelf ? '' : trust === 'verified'
+                ? '<span class="trust-badge verified">✓</span>'
+                : '<span class="trust-badge unverified">⚠</span>';
+            return `<div class="${cls}"><div class="nick">${esc(nick)}${badge}</div><div class="text">${esc(text)}</div><div class="time">${time}</div></div>`;
+        }
 
-// ── Peers ──────────────────────────────────────────────────────
-function renderPeers(peers) {
-    const div = document.getElementById('peer-list');
-    document.getElementById('peer-count').textContent = peers.length + ' peer(s)';
-    if (!peers.length) {
-        div.innerHTML = '<div class="empty-state">No peers found.<br>Make sure another NEC node is on the same network.</div>';
-        return;
-    }
-    div.innerHTML = peers.map(p => `
+        // ── Peers ──────────────────────────────────────────────────────
+        function renderPeers(peers) {
+            const div = document.getElementById('peer-list');
+            document.getElementById('peer-count').textContent = peers.length + ' peer(s)';
+            if (!peers.length) {
+                div.innerHTML = '<div class="empty-state">No peers found.<br>Make sure another NEC node is on the same network.</div>';
+                return;
+            }
+            div.innerHTML = peers.map(p => {
+                const verified = p.status === 'verified';
+                const statusColor = verified ? 'var(--green)' : p.status === 'blocked' ? 'var(--red)' : 'var(--yellow)';
+                return `
         <div class="peer-card">
             <div class="sn">${p.safety_number}</div>
             <div class="peer-id">${p.peer_id.substring(0, 24)}...</div>
             <div style="margin-top:3px;font-size:11px;color:var(--text2)">
-                <span style="color:${p.status==='verified'?'var(--green)':p.status==='blocked'?'var(--red)':'var(--yellow)'}">${p.status}</span>
+                <span style="color:${statusColor}">${p.status}</span>
             </div>
             <div class="actions">
-                ${p.status !== 'verified' ? `<button class="btn small success" onclick="verifyPeer('${p.peer_id}')">✓ Verify</button>` : ''}
-                <button class="btn small" style="background:var(--accent2);color:var(--bg)" onclick="openDM('${p.peer_id}')">💬 DM</button>
-                <button class="btn small" onclick="callPeer('${p.peer_id}')">📞 Call</button>
+                ${!verified ? `<button class="btn small success" onclick="verifyPeer('${p.peer_id}')">✓ Verify</button>` : ''}
+                ${verified
+                        ? `<button class="btn small" style="background:var(--accent2);color:var(--bg)" onclick="openDM('${p.peer_id}')">💬 DM</button>
+                       <button class="btn small" onclick="callPeer('${p.peer_id}')">📞 Call</button>`
+                        : `<span style="font-size:10px;color:var(--text2);padding:5px">⚠ Verify to chat/call</span>`}
             </div>
-        </div>
-    `).join('');
-}
-
-function requestPeers() { send('get_peers', {}); }
-function verifyPeer(id) { send('verify_peer', { peer_id: id }); setTimeout(requestPeers, 300); }
-
-function callPeer(id) {
-    send('call_peer', { peer_id: id });
-    document.getElementById('call-status').textContent = 'Calling...';
-    document.getElementById('call-stats').style.display = 'grid';
-    document.getElementById('hangup-btn').style.display = 'block';
-    startCallStats();
-    document.querySelector('[data-panel="calls"]').click();
-}
-function hangup() { send('hangup', {}); resetCallUI(); }
-function resetCallUI() {
-    document.getElementById('call-status').textContent = 'No active call';
-    document.getElementById('call-stats').style.display = 'none';
-    document.getElementById('hangup-btn').style.display = 'none';
-    stopCallStats();
-}
-
-function startCallStats() { stopCallStats(); callStatsInterval = setInterval(() => send('get_callstats', {}), 1000); }
-function stopCallStats() { if (callStatsInterval) { clearInterval(callStatsInterval); callStatsInterval = null; } }
-function renderCallStats(s) {
-    document.getElementById('call-status').textContent = `Call active (${Math.round(s.duration)}s)`;
-    document.getElementById('stat-latency').textContent = s.latency_ms.toFixed(1);
-    document.getElementById('stat-jitter').textContent = s.jitter_ms.toFixed(2);
-    document.getElementById('stat-sent').textContent = s.sent;
-    document.getElementById('stat-recv').textContent = s.recv;
-    document.getElementById('stat-lost').textContent = s.lost;
-    document.getElementById('stat-loss').textContent = s.loss_pct.toFixed(1);
-}
-
-// ── Info ────────────────────────────────────────────────────────
-async function fetchInfo() {
-    try {
-        const r = await fetch('/api/info');
-        const info = await r.json();
-        myPeerID = info.peer_id;
-        myNick = info.nick;
-        document.getElementById('info-peerid').textContent = info.peer_id;
-        document.getElementById('info-sn').textContent = info.safety_number;
-        document.getElementById('info-nick').textContent = info.nick;
-        document.getElementById('nick-display').textContent = info.nick;
-        document.getElementById('info-url').textContent = location.href;
-    } catch(e) {}
-}
-
-// ── Tab switching ──────────────────────────────────────────────
-function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    const unread = tab.querySelector('.unread');
-    if (unread) unread.remove();
-    const panel = document.getElementById('panel-' + tab.dataset.panel);
-    if (panel) panel.classList.add('active');
-    if (tab.dataset.panel === 'peers') requestPeers();
-}
-document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t)));
-document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
-
-// ── Helpers ────────────────────────────────────────────────────
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function shortID(s) { return s.substring(s.length - 8); }
-function timeNow() { return new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
-
-// ── Init: restore messages on load ─────────────────────────────
-function initFromStorage() {
-    renderGlobalChat();
-    // Recreate DM tabs for existing conversations.
-    for (const peerID of Object.keys(dmMessages)) {
-        if (dmMessages[peerID].length > 0) {
-            const lastMsg = dmMessages[peerID][dmMessages[peerID].length - 1];
-            ensureDMTab(peerID, lastMsg.nick || shortID(peerID));
+        </div>`;
+            }).join('');
         }
-    }
-}
 
-setInterval(requestPeers, 5000);
-initFromStorage();
-connect();
+        function requestPeers() { send('get_peers', {}); }
+        function verifyPeer(id) { send('verify_peer', { peer_id: id }); setTimeout(requestPeers, 300); }
+
+        function callPeer(id) {
+            send('call_peer', { peer_id: id });
+            document.getElementById('call-status').textContent = 'Calling...';
+            document.getElementById('call-stats').style.display = 'grid';
+            document.getElementById('hangup-btn').style.display = 'block';
+            startCallStats();
+            document.querySelector('[data-panel="calls"]').click();
+        }
+        function hangup() { send('hangup', {}); resetCallUI(); }
+        function resetCallUI() {
+            document.getElementById('call-status').textContent = 'No active call';
+            document.getElementById('call-stats').style.display = 'none';
+            document.getElementById('hangup-btn').style.display = 'none';
+            stopCallStats();
+            stopCallTone();
+        }
+
+        function startCallStats() { stopCallStats(); callStatsInterval = setInterval(() => send('get_callstats', {}), 1000); }
+        function stopCallStats() { if (callStatsInterval) { clearInterval(callStatsInterval); callStatsInterval = null; } }
+        function renderCallStats(s) {
+            document.getElementById('call-status').textContent = `Call active (${Math.round(s.duration)}s)`;
+            document.getElementById('stat-latency').textContent = s.latency_ms.toFixed(1);
+            document.getElementById('stat-jitter').textContent = s.jitter_ms.toFixed(2);
+            document.getElementById('stat-sent').textContent = s.sent;
+            document.getElementById('stat-recv').textContent = s.recv;
+            document.getElementById('stat-lost').textContent = s.lost;
+            document.getElementById('stat-loss').textContent = s.loss_pct.toFixed(1);
+            // Start call tone if not already playing.
+            startCallTone();
+        }
+
+        // ── Call Audio Tone (Web Audio API) ────────────────────────────
+        let audioCtx, oscillator, gainNode;
+        function startCallTone() {
+            if (oscillator) return; // Already playing.
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                oscillator = audioCtx.createOscillator();
+                gainNode = audioCtx.createGain();
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime); // Very quiet.
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.start();
+            } catch (e) { }
+        }
+        function stopCallTone() {
+            try {
+                if (oscillator) { oscillator.stop(); oscillator = null; }
+                if (audioCtx) { audioCtx.close(); audioCtx = null; }
+                gainNode = null;
+            } catch (e) { }
+        }
+
+        // ── Info ────────────────────────────────────────────────────────
+        async function fetchInfo() {
+            try {
+                const r = await fetch('/api/info');
+                const info = await r.json();
+                myPeerID = info.peer_id;
+                myNick = info.nick;
+                document.getElementById('info-peerid').textContent = info.peer_id;
+                document.getElementById('info-sn').textContent = info.safety_number;
+                document.getElementById('info-nick').textContent = info.nick;
+                document.getElementById('nick-display').textContent = info.nick;
+                document.getElementById('info-url').textContent = location.href;
+            } catch (e) { }
+        }
+
+        // ── Tab switching ──────────────────────────────────────────────
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            const unread = tab.querySelector('.unread');
+            if (unread) unread.remove();
+            const panel = document.getElementById('panel-' + tab.dataset.panel);
+            if (panel) panel.classList.add('active');
+            if (tab.dataset.panel === 'peers') requestPeers();
+        }
+        document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t)));
+        document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+        // ── Helpers ────────────────────────────────────────────────────
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+        function shortID(s) { return s.substring(s.length - 8); }
+        function timeNow() { return new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+
+        // ── Init: restore messages on load ─────────────────────────────
+        function initFromStorage() {
+            // Use requestAnimationFrame to ensure DOM is painted before rendering.
+            requestAnimationFrame(() => {
+                renderGlobalChat();
+                // Recreate DM tabs for existing conversations.
+                for (const peerID of Object.keys(dmMessages)) {
+                    if (dmMessages[peerID].length > 0) {
+                        const lastMsg = dmMessages[peerID][dmMessages[peerID].length - 1];
+                        ensureDMTab(peerID, lastMsg.nick || shortID(peerID));
+                    }
+                }
+            });
+        }
+
+        setInterval(requestPeers, 5000);
+        initFromStorage();
+        connect();
     </script>
 </body>
 
