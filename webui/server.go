@@ -218,6 +218,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg WSMessage) {
 	switch msg.Type {
+	case "ping":
+		// Just to keep connection alive
+		return
 	case "send_chat":
 		var payload struct {
 			Text string `json:"text"`
@@ -412,6 +415,8 @@ func (s *Server) forwardMessages(ctx context.Context) {
 
 func (s *Server) sendToConn(conn *websocket.Conn, msg WSMessage) {
 	data, _ := json.Marshal(msg)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 

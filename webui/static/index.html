@@ -791,6 +791,8 @@
         }
 
         setInterval(requestPeers, 5000);
+        // Send a ping every 10 seconds to prevent the browser/OS/router from dropping the connection
+        setInterval(() => send('ping', {}), 10000);
         initFromStorage();
         connect();
     </script>
