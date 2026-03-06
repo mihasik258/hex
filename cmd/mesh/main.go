@@ -1,12 +1,14 @@
 // NEC (Novatorskaya Entryways Connections) Mesh Messenger — entry point.
 //
 // This binary starts a P2P node with Ed25519 identity, QUIC transport,
-// mDNS discovery, and GossipSub messaging. It provides an interactive CLI
-// for chatting, verifying peers, and managing trust.
+// mDNS discovery, GossipSub messaging, and chunked file transfer.
+// It provides an interactive CLI for chatting, sending files, verifying
+// peers, and managing trust.
 package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -16,8 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"nec/filetransfer"
 	"nec/messaging"
 	"nec/network"
 )
@@ -58,6 +62,9 @@ func main() {
 	mdnsSvc := network.SetupMDNS(node)
 	defer mdnsSvc.Close()
 
+	// ── Register file transfer handler ─────────────────────────────────
+	filetransfer.RegisterHandler(node.Host, "received_files")
+
 	// ── Initialize messaging subsystem ──────────────────────────────────
 	trustStore := messaging.NewTrustStore()
 	msgStore := messaging.NewMessageStore(24 * time.Hour)
@@ -95,7 +102,7 @@ func main() {
 			if line == "" {
 				continue
 			}
-			handleCommand(line, chatRoom, trustStore, msgStore)
+			handleCommand(line, node.Context(), node.Host, chatRoom, trustStore, msgStore)
 		}
 	}()
 
@@ -105,7 +112,7 @@ func main() {
 }
 
 // handleCommand processes CLI commands and chat messages.
-func handleCommand(line string, cr *messaging.ChatRoom, ts *messaging.TrustStore, ms *messaging.MessageStore) {
+func handleCommand(line string, ctx context.Context, h host.Host, cr *messaging.ChatRoom, ts *messaging.TrustStore, ms *messaging.MessageStore) {
 	switch {
 	case line == "/help":
 		printHelp()
@@ -167,6 +174,27 @@ func handleCommand(line string, cr *messaging.ChatRoom, ts *messaging.TrustStore
 
 	case line == "/store":
 		fmt.Printf("  Store-and-forward: %d pending message(s)\n", ms.TotalPending())
+
+	case strings.HasPrefix(line, "/send "):
+		parts := strings.SplitN(strings.TrimPrefix(line, "/send "), " ", 2)
+		if len(parts) < 2 {
+			fmt.Println("  Usage: /send <PeerID> <filepath>")
+			return
+		}
+		pid, err := peer.Decode(parts[0])
+		if err != nil {
+			fmt.Printf("  Invalid PeerID: %v\n", err)
+			return
+		}
+		filePath := strings.TrimSpace(parts[1])
+		fmt.Printf("  Sending %q to %s...\n", filePath, parts[0][:16])
+		go func() {
+			if err := filetransfer.SendFile(ctx, h, pid, filePath); err != nil {
+				fmt.Printf("  ❌ File transfer failed: %v\n", err)
+			} else {
+				fmt.Println("  ✅ File transfer complete!")
+			}
+		}()
 
 	case strings.HasPrefix(line, "/"):
 		fmt.Printf("  Unknown command: %s (type /help)\n", line)
@@ -231,12 +259,13 @@ func handleIncoming(cr *messaging.ChatRoom, ts *messaging.TrustStore, ms *messag
 func printHelp() {
 	fmt.Println("───────────────────────────────────────────────────")
 	fmt.Println("  Commands:")
-	fmt.Println("    /peers           — list connected peers")
-	fmt.Println("    /trust           — show trust store")
-	fmt.Println("    /verify <PeerID> — mark peer as verified (TOFU)")
-	fmt.Println("    /block <PeerID>  — block a peer")
-	fmt.Println("    /store           — show pending offline messages")
-	fmt.Println("    /help            — show this help")
-	fmt.Println("    <text>           — send a chat message")
+	fmt.Println("    /peers                    — list connected peers")
+	fmt.Println("    /trust                    — show trust store")
+	fmt.Println("    /verify <PeerID>          — mark peer as verified")
+	fmt.Println("    /block <PeerID>           — block a peer")
+	fmt.Println("    /send <PeerID> <filepath> — send a file")
+	fmt.Println("    /store                    — pending offline msgs")
+	fmt.Println("    /help                     — show this help")
+	fmt.Println("    <text>                    — send a chat message")
 	fmt.Println("───────────────────────────────────────────────────")
 }
